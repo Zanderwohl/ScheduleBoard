@@ -1,8 +1,9 @@
 from picographics import PicoGraphics, DISPLAY_PICO_DISPLAY_2
 import uasyncio as asyncio
 import network
+import time
 from settings import SSID, PASS
-from config import WEB_ADMIN
+from config import WEB_ADMIN, TIME_FACTOR
 from wifi import connect
 from mdns_announce import announce_http
 from display_board import render_board
@@ -34,7 +35,16 @@ async def main():
     display.text("Online", 4, 20, scale=3)
     display.update()
 
-    render_board(display, sorted(tt.TIMETABLE, key=tt._time_key), fg, bg)
+    # virtual clock starting at midnight
+    start_ms = time.ticks_ms()
+
+    def current_minutes():
+        elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ms)
+        sim_minutes = int((elapsed_ms / 1000.0) * (TIME_FACTOR / 60.0))
+        return sim_minutes % (24 * 60)
+
+    # initial render
+    render_board(display, tt.generate_timetable(tt.ROUTES, current_minutes(), 20), fg, bg)
 
     if WEB_ADMIN:
         # Bonjour announce (no bind)
@@ -45,10 +55,30 @@ async def main():
         handle = create_handler(display, fg, bg)
         server = await asyncio.start_server(handle, "0.0.0.0", 80, backlog=2)
         print("Serving on", MY_IP, "as", f"{MY_NAME}.local")
+        # periodic update of board based on virtual time
+        async def updater():
+            last_min = -1
+            while True:
+                now_min = current_minutes()
+                if now_min != last_min:
+                    last_min = now_min
+                    render_board(display, tt.generate_timetable(tt.ROUTES, now_min, 20), fg, bg)
+                await asyncio.sleep_ms(200)
+
+        asyncio.create_task(updater())
         await asyncio.Event().wait()
     else:
         # No web admin: just idle
-        await asyncio.Event().wait()
+        # periodic update even without web UI
+        async def updater():
+            last_min = -1
+            while True:
+                now_min = current_minutes()
+                if now_min != last_min:
+                    last_min = now_min
+                    render_board(display, tt.generate_timetable(tt.ROUTES, now_min, 20), fg, bg)
+                await asyncio.sleep_ms(200)
+        await updater()
 
 
 if __name__ == "__main__":

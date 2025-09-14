@@ -93,27 +93,28 @@ def http_response(status, headers, body_bytes):
 
 # ---------- HTML rendering ----------
 def render_page():
-    # Build table rows from TIMETABLE
+    # Build table rows from ROUTES (backing structure)
     def esc(x):
         return (x or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
     rows_html = []
-    for i, row in enumerate(tt.TIMETABLE):
+    for i, row in enumerate(tt.ROUTES):
         rows_html.append(f"""
 <tr>
-  <td><input name="time[]"   value="{esc(row.get('time', ''))}"   required></td>
   <td><input name="train[]"  value="{esc(row.get('train', ''))}"  required></td>
   <td><input name="via[]"    value="{esc(row.get('via', ''))}"></td>
   <td><input name="dest[]"   value="{esc(row.get('dest', ''))}"></td>
-  <td><input name="track[]"  value="{esc(row.get('track', ''))}" style="width:4em"></td>
+  <td><input name="frequency[]"  value="{esc(str(row.get('frequency', '')))}" style="width:6em" required></td>
+  <td><input name="track[]"  value="{esc(str(row.get('track', '')))}" style="width:4em"></td>
+  <td><input name="offset[]"  value="{esc(str(row.get('offset', '')))}" style="width:6em"></td>
   <td><button type="button" class="del">Delete</button></td>
 </tr>""")
     rows = "\n".join(rows_html) or """
 <tr>
-  <td><input name="time[]" required></td>
   <td><input name="train[]" required></td>
   <td><input name="via[]"></td>
   <td><input name="dest[]"></td>
+  <td><input name="frequency[]" style="width:6em" required></td>
   <td><input name="track[]" style="width:4em"></td>
   <td><button type="button" class="del">Delete</button></td>
 </tr>
@@ -127,11 +128,11 @@ def render_page():
   input{{width:100%}}
   .actions{{margin-top:1rem;display:flex;gap:1rem}}
 </style>
-<h1>Train Board</h1>
+<h1>Train Board Routes</h1>
 <form method="POST" action="/save">
   <table id="tt">
     <thead><tr>
-      <th>Time</th><th>Train</th><th>Via</th><th>Destination</th><th>Track</th><th></th>
+      <th>Train</th><th>Via</th><th>Destination</th><th>Frequency (min)</th><th>Track</th><th>Offset (min)</th><th></th>
     </tr></thead>
     <tbody>
       {rows}
@@ -147,11 +148,12 @@ def render_page():
   function mkRow() {{
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><input name="time[]" required></td>
       <td><input name="train[]" required></td>
       <td><input name="via[]"></td>
       <td><input name="dest[]"></td>
+      <td><input name="frequency[]" style="width:6em" required></td>
       <td><input name="track[]" style="width:4em"></td>
+      <td><input name="offset[]" style="width:6em"></td>
       <td><button type="button" class="del">Delete</button></td>`;
     return tr;
   }}
@@ -187,30 +189,50 @@ def create_handler(display, fg_pen, bg_pen):
                 await writer.awrite(resp)
 
             elif method == "POST" and path.startswith("/save"):
-                # Parse and update model
+                # Parse and update routes, then regenerate timetable
                 form = parse_form(body)
-                times = form.get("time[]", [])
                 trains = form.get("train[]", [])
                 vias = form.get("via[]", [])
                 dests = form.get("dest[]", [])
+                freqs = form.get("frequency[]", [])
                 tracks = form.get("track[]", [])
-                # Rebuild TIMETABLE; align by shortest list length
-                n = min(len(times), len(trains), len(vias), len(dests), len(tracks))
-                new_table = []
+                offsets = form.get("offset[]", [])
+                n = min(len(trains), len(vias), len(dests), len(freqs), len(tracks), len(offsets))
+                routes = []
                 for i in range(n):
-                    # Skip completely empty rows
-                    if not (times[i].strip() or trains[i].strip() or vias[i].strip() or dests[i].strip() or tracks[i].strip()):
+                    tr = trains[i].strip()
+                    vi = vias[i].strip()
+                    de = dests[i].strip()
+                    fr_raw = freqs[i].strip()
+                    tk = tracks[i].strip()
+                    off_raw = offsets[i].strip()
+                    if not (tr or vi or de or fr_raw):
                         continue
-                    new_table.append({
-                        "time": times[i].strip(),
-                        "train": trains[i].strip(),
-                        "via": vias[i].strip(),
-                        "dest": dests[i].strip(),
-                        "track": tracks[i].strip(),
+                    try:
+                        fr = int(fr_raw)
+                    except Exception:
+                        fr = 60
+                    if fr <= 0:
+                        fr = 60
+                    try:
+                        off = int(off_raw)
+                    except Exception:
+                        off = 0
+                    if off < 0:
+                        off = 0
+                    routes.append({
+                        "train": tr,
+                        "via": vi,
+                        "dest": de,
+                        "frequency": fr,
+                        "track": tk,
+                        "offset": off,
                     })
-                # Update global
-                tt.TIMETABLE = new_table
-                render_board(display, sorted(tt.TIMETABLE, key=tt._time_key), fg_pen, bg_pen)
+                # Update globals
+                tt.ROUTES = routes
+                # Regenerate a small upcoming window from midnight for preview
+                tt.TIMETABLE = tt.generate_timetable(tt.ROUTES, 0, 20)
+                render_board(display, tt.TIMETABLE, fg_pen, bg_pen)
 
                 # 303 redirect back to GET /
                 resp = http_response(
