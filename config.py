@@ -1,0 +1,3 @@
+SSID='ZandyLand'
+PASSWORD='Zandy100'
+WEB_ADMIN=False
